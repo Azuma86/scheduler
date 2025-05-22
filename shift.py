@@ -4,7 +4,7 @@ import datetime
 from ortools.sat.python import cp_model
 
 # アプリタイトル
-st.title("OPT SHIFT🗓️")
+st.title("Opt Shift🗓️")
 
 # ===== 管理者設定 =====
 st.sidebar.header("🛠 管理者設定")

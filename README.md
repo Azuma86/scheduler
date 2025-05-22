@@ -1,4 +1,4 @@
-# Streamlit Shift Scheduler
+# Opt Shift
 
 最適化アルゴリズムを用いた多機能シフト自動割り当てアプリです。 このアプリは **Streamlit Community Cloud 上でブラウザから直接操作**できます。
 ）
