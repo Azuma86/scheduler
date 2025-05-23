@@ -8,6 +8,11 @@ st.title("Opt Shift🗓️")
 
 # ===== 管理者設定 =====
 st.sidebar.header("🛠 管理者設定")
+#シフト作成期間
+start_date = st.sidebar.date_input("シフト開始日", datetime.date.today())
+end_date = st.sidebar.date_input("シフト終了日", datetime.date.today() + datetime.timedelta(days=13))
+st.sidebar.markdown(f"期間: {start_date} 〜 {end_date} ({(end_date-start_date).days+1}日間)")
+
 # 役割定義
 roles_txt = st.sidebar.text_input("役割（カンマ区切り）", "キッチン, ホール")
 roles = [r.strip() for r in roles_txt.split(',') if r.strip()]
@@ -44,6 +49,25 @@ if "休憩時間ルール" in criteria:
         "休憩時間 (h)", min_value=0.0, max_value=8.0, value=1.0, step=0.5
     )
 
+st.sidebar.subheader("▶ 曜日ごとの必要人数設定")
+weekday_map = {0: '月',1:'火',2:'水',3:'木',4:'金',5:'土',6:'日'}
+weekday_reqs = {}
+for wd in range(7):
+    req = st.sidebar.number_input(
+    f"{weekday_map[wd]}曜日 必要人数", 0, 20, 2, key=f"wd_req_{wd}")
+    weekday_reqs[wd] = req
+
+st.sidebar.subheader("▶ 特別日設定")
+special_dates = st.sidebar.multiselect(
+"特別日を選択 (期間内の日付)",
+[start_date + datetime.timedelta(days=i) for i in range((end_date-start_date).days+1)],
+format_func=lambda d: d.strftime('%Y-%m-%d')
+)
+special_reqs = {}
+for sd in special_dates:
+    special_reqs[sd] = st.sidebar.number_input(
+    f"{sd} 必要人数", 0, 20, weekday_reqs[sd.weekday()], key=f"sp_req_{sd}")
+    
 # 固定シフト設定
 fixed_defs = []
 if shift_mode == "固定シフト":
@@ -95,16 +119,6 @@ staff_roles = {}
 for p in staffs:
     staff_roles[p] = st.multiselect(f"{p} の役割", roles, default=roles)
 
-# 使い方説明
-with st.expander("📖 使い方"):  
-    st.markdown("""
-1. Googleフォームで「名前, 曜日, 開始時刻, 終了時刻」を集め、CSV形式でダウンロード  
-2. CSVの列名は `名前, 曜日, 開始時刻 (HH:MM), 終了時刻 (HH:MM)` としてください  
-3. サイドバーで役割・シフト定義・割り当て基準を設定  
-4. CSVをアップロードして「自動割り当て実行」をクリック  
-5. 結果と不足シフトを確認し、CSVをダウンロード  
-    """
-)
 
 # 最適化モデル実行
 if st.button("⚙️ 自動割り当て実行"):
