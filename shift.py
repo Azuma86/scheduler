@@ -3,6 +3,8 @@ import pandas as pd
 import datetime
 from ortools.sat.python import cp_model
 
+
+
 # アプリタイトル
 st.title("Opt Shift🗓️")
 
@@ -104,11 +106,14 @@ if not uploaded:
     st.stop()
 
 # データ準備
-df = pd.read_csv(uploaded)
-for col in ["開始時刻", "終了時刻"]:
-    df[col] = df[col].apply(lambda s: datetime.datetime.strptime(s.strip(), "%H:%M").time() if isinstance(s, str) else None)
 
-staffs = df['名前'].unique().tolist()
+df = pd.read_csv(uploaded)
+df['日付'] = pd.to_datetime(df['日付'])
+df['weekday'] = df['日付'].dt.weekday
+ndf = df.copy()
+ndf['開始時刻'] = pd.to_datetime(ndf['開始時刻'],format='%H:%M').dt.time
+ndf['終了時刻'] = pd.to_datetime(ndf['終了時刻'],format='%H:%M').dt.time
+staffs = ndf['名前'].unique().tolist()
 core_members = st.sidebar.multiselect("主要メンバーを選択 (各タスクに最低1名)", staffs)
 
 st.subheader("スタッフ希望一覧")
@@ -119,133 +124,24 @@ staff_roles = {}
 for p in staffs:
     staff_roles[p] = st.multiselect(f"{p} の役割", roles, default=roles)
 
-
-# 最適化モデル実行
+tasks = generate_tasks(start_date,end_date,shift_mode,fixed_defs,free_defs)
 if st.button("⚙️ 自動割り当て実行"):
-    model = cp_model.CpModel()
-
-    # タスク定義
-    tasks = []  # (id, start_min, end_min, req_dict)
-    def to_min(t): return t.hour*60 + t.minute
-    if shift_mode == "固定シフト":
-        for idx, sd in enumerate(fixed_defs):
-            tasks.append((sd['name'], to_min(sd['start']), to_min(sd['end']), sd['req']))
-    else:
-        for fd in free_defs:
-            tasks.append((fd['slot'], to_min(fd['start']), to_min(fd['end']), fd['req']))
-
-    # 変数定義 x[(task, person, role)]
-    x = {}
-    for t_id, t_s, t_e, req in tasks:
-        for role, rnum in req.items():
-            for p in staffs:
-                # 時刻・役割フィルタ
-                if role in staff_roles[p] and not df[(df['名前']==p) & (df['開始時刻']<= datetime.time(t_s//60, t_s%60)) & (df['終了時刻']>= datetime.time(t_e//60, t_e%60))].empty:
-                    x[(t_id, p, role)] = model.NewBoolVar(f"x_{t_id}_{p}_{role}")
-
-    # 条件1: 必要人数の満足
-    for t_id, _, _, req in tasks:
-        for role, rnum in req.items():
-            vars_ = [x[(t_id, p, role)] for p in staffs if (t_id, p, role) in x]
-            model.Add(sum(vars_) == rnum)
-
-    # 条件2: タスク内排他
-    for t_id, _, _, _ in tasks:
-        for p in staffs:
-            vars_ = [x[(t_id, p, role)] for role in roles if (t_id, p, role) in x]
-            if vars_:
-                model.Add(sum(vars_) <= 1)
-
-    # 条件3: 休憩時間ルール
-    if "休憩時間ルール" in criteria:
-        for i, (t1, s1, e1, _) in enumerate(tasks):
-            for j, (t2, s2, e2, _) in enumerate(tasks):
-                if i >= j: continue
-                # 連続勤務時間が閾値超? and 休憩挿入が必要?
-                dur1 = (e1 - s1)
-                if dur1 >= threshold_hours*60:
-                    # 次の開始が休憩時間内なら禁止
-                    if s2 < e1 + break_hours*60 and s2 >= s1:
-                        for p in staffs:
-                            for r1 in roles:
-                                for r2 in roles:
-                                    if (t1, p, r1) in x and (t2, p, r2) in x:
-                                        model.Add(x[(t1, p, r1)] + x[(t2, p, r2)] <= 1)
-
-    # 条件4: 1日最大勤務時間
-    if "1日あたり最大勤務時間" in criteria:
-        for p in staffs:
-            terms = []
-            for t_id, t_s, t_e, _ in tasks:
-                dur = (t_e - t_s)
-                for role in roles:
-                    if (t_id, p, role) in x:
-                        terms.append(x[(t_id, p, role)] * dur)
-            if terms:
-                model.Add(sum(terms) <= max_daily_hours*60)
-
-    # 条件5: コアメンバー保証
-    if core_members:
-        for t_id, _, _, _ in tasks:
-            core_vars = []
-            for p in core_members:
-                for role in roles:
-                    if (t_id, p, role) in x:
-                        core_vars.append(x[(t_id, p, role)])
-            if core_vars:
-                model.Add(sum(core_vars) >= 1)
-
-    # 目的: 勤務回数偏り
-    if "勤務回数の偏りを抑える" in criteria:
-        assign_cnt = {p: model.NewIntVar(0, len(tasks), f"cnt_{p}") for p in staffs}
-        for p in staffs:
-            terms = []
-            for t_id, _, _, _ in tasks:
-                for role in roles:
-                    if (t_id, p, role) in x:
-                        terms.append(x[(t_id, p, role)])
-            if terms:
-                model.Add(assign_cnt[p] == sum(terms))
-        max_c = model.NewIntVar(0, len(tasks), "max_c")
-        min_c = model.NewIntVar(0, len(tasks), "min_c")
-        model.AddMaxEquality(max_c, list(assign_cnt.values()))
-        model.AddMinEquality(min_c, list(assign_cnt.values()))
-        model.Minimize(max_c - min_c)
-
-    # ソルバー実行
-    solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 30
-    res = solver.Solve(model)
-
-    # 割当結果抽出
-    assigned = []
-    if res == cp_model.OPTIMAL or res == cp_model.FEASIBLE:
-        for (t_id, p, role), var in x.items():
-            if solver.Value(var) == 1:
-                start = datetime.time(*divmod(next(s for tid,s,_,_ in tasks if tid==t_id)[1],60))
-                end =   datetime.time(*divmod(next((s,_,e,_) for tid,s,e,_ in tasks if tid==t_id)[2],60))
-                assigned.append({"名前":p, "タスク":t_id, "役割":role,
-                                  "時間":f"{start.strftime('%H:%M')}–{end.strftime('%H:%M')}"})
-    else:
-        st.error("解が見つかりませんでした。制約を緩めてください。")
+    assigned, missing = optimize_schedule(
+        tasks, staffs, staff_roles, criteria,
+        max_daily_hours, threshold_hours, break_hours, core_members
+    )
+    st.subheader("🎉 割り当て結果")
+    st.dataframe(pd.DataFrame(assigned))
+    if missing:
+        st.subheader("⚠️ 不足シフト")
+        st.dataframe(pd.DataFrame(missing))
 
     # DataFrame生成
     df_res = pd.DataFrame(assigned)
     st.subheader("🎉 割り当て結果")
     st.dataframe(df_res)
 
-    # 不足シフトの報告
-    missing = []
-    for t_id, _, _, req in tasks:
-        for role, rnum in req.items():
-            assigned_n = len([1 for a in assigned if a['タスク']==t_id and a['役割']==role])
-            if assigned_n < rnum:
-                missing.append({"タスク":t_id, "役割":role,
-                                "不足数":rnum - assigned_n})
-    if missing:
-        st.subheader("⚠️ 不足シフト")
-        st.dataframe(pd.DataFrame(missing))
-
+    
     # CSVダウンロード
     st.download_button(
         "CSVダウンロード",
